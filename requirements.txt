@@ -1,0 +1,13 @@
+aiogram==2.25.1
+python-dotenv
+qdrant-client
+sentence-transformers
+requests
+matplotlib
+Pillow
+aiohttp
+# Новые зависимости для улучшенного NLP
+transformers
+torch
+numpy
+scikit-learn
