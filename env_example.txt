@@ -1,0 +1,24 @@
+# Telegram Bot Configuration
+BOT_TOKEN=your_telegram_bot_token_here
+ADMIN_ID=your_admin_telegram_id_here
+
+# OpenAI Configuration
+OPENAI_API_KEY=your_openai_api_key_here
+OPENAI_MODEL=gpt-3.5-turbo
+
+# Qdrant Vector Database
+QDRANT_URL=your_qdrant_cloud_url_here
+QDRANT_API_KEY=your_qdrant_api_key_here
+QDRANT_COLLECTION_NAME=aurora_knowledge_chunks
+
+# Bot Settings
+MAX_RESPONSE_LENGTH=999
+ENABLE_LOGGING=true
+LOG_LEVEL=INFO
+
+# Search Settings
+SEARCH_RESULTS_LIMIT=10
+SIMILARITY_THRESHOLD=0.7
+
+# Optional: Custom OpenAI Endpoint (for OpenRouter, etc.)
+# OPENAI_BASE_URL=https://api.openrouter.ai/api/v1
