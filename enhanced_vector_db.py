@@ -441,13 +441,43 @@ class EnhancedVectorDB:
     
     def get_cached_response(self, query: str) -> Optional[str]:
         """Получает закэшированный ответ"""
-        # Создаем ключ на основе нормализованного запроса
-        cache_key = hashlib.md5(query.lower().strip().encode()).hexdigest()
+        # Улучшенная нормализация запроса для кэширования
+        normalized_query = self._normalize_query_for_cache(query)
+        cache_key = hashlib.md5(normalized_query.encode()).hexdigest()
         return self.response_cache.get(cache_key)
+    
+    def _normalize_query_for_cache(self, query: str) -> str:
+        """Нормализует запрос для более эффективного кэширования"""
+        # Приводим к нижнему регистру
+        normalized = query.lower().strip()
+        
+        # Убираем пунктуацию
+        import re
+        normalized = re.sub(r'[^\w\s]', ' ', normalized)
+        
+        # Синонимы для иммунитета
+        immunity_synonyms = [
+            'для укрепления иммунитета', 'укрепления иммунитета', 'иммунитет', 
+            'для иммунитета', 'укрепить иммунитет', 'повысить иммунитет',
+            'поддержать иммунитет', 'поддержка иммунитета'
+        ]
+        
+        # Заменяем все синонимы на стандартный термин
+        for synonym in immunity_synonyms:
+            if synonym in normalized:
+                normalized = 'иммунитет'
+                break
+        
+        # Убираем лишние пробелы
+        normalized = ' '.join(normalized.split())
+        
+        return normalized
     
     def cache_response(self, query: str, response: str):
         """Кэширует ответ"""
-        cache_key = hashlib.md5(query.lower().strip().encode()).hexdigest()
+        # Используем ту же нормализацию что и для получения кэша
+        normalized_query = self._normalize_query_for_cache(query)
+        cache_key = hashlib.md5(normalized_query.encode()).hexdigest()
         self.response_cache.set(cache_key, response)
     
     def start_auto_update(self):

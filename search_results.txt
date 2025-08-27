@@ -1,0 +1,6 @@
+╚∙хь: ыхЎшЄшэ
+╥хЁь√ яюшёър: ['ыхЎшЄшэ']
+==================================================
+╧ЁюфєъЄют т knowledge_base.json: 85
+╬°шсър: 'charmap' codec can't encode character '\u2705' in position 0: character maps to <undefined>
+┬ёхую эрщфхэю: 1 яЁюфєъЄют

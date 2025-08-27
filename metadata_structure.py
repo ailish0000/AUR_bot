@@ -9,6 +9,7 @@ class ProductCategory(Enum):
     """Категории продуктов"""
     VITAMINS_MINERALS = "Витамины, минералы и микроэлементы"
     VITAMIN_C = "Витамин С"
+    CALCIUM = "Кальций"
     HERBS_EXTRACTS = "Травы и экстракты"
     PROBIOTICS = "Пробиотики"
     SORBENTS = "Сорбенты и детокс"
@@ -105,8 +106,11 @@ class MetadataExtractor:
             ProductCategory.VITAMIN_C: [
                 "витамин с", "vitamin c", "аскорбин", "оранж табс", "оранж дей"
             ],
+            ProductCategory.CALCIUM: [
+                "кальций", "calcium", "румарин кальций", "кальций банан", "кальций утро"
+            ],
             ProductCategory.VITAMINS_MINERALS: [
-                "витамин", "минерал", "магний", "кальций", "железо", "цинк", 
+                "витамин", "минерал", "магний", "железо", "цинк", 
                 "витамин d", "витамин b", "фолиевая кислота"
             ],
             ProductCategory.HERBS_EXTRACTS: [
@@ -196,6 +200,7 @@ class MetadataExtractor:
         # Сначала проверяем специализированные категории (высокий приоритет)
         priority_categories = [
             ProductCategory.VITAMIN_C,
+            ProductCategory.CALCIUM,
             ProductCategory.HEPATOPROTECTORS,
             ProductCategory.SORBENTS,
             ProductCategory.ANTIPARASITIC,

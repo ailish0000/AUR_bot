@@ -56,6 +56,43 @@ except ImportError:
 
 load_dotenv()
 
+def smart_truncate_text(text: str, max_length: int) -> str:
+    """Умное обрезание текста с учетом границ предложений и абзацев"""
+    if len(text) <= max_length:
+        return text
+    
+    # Обрезаем до максимальной длины
+    truncated = text[:max_length]
+    
+    # Пытаемся найти хорошее место для обрезки в порядке приоритета:
+    # 1. Конец абзаца (двойной перенос строки)
+    # 2. Конец предложения (точка, восклицательный, вопросительный знак)
+    # 3. Конец слова (пробел)
+    
+    # Ищем последний абзац
+    last_paragraph = truncated.rfind('\n\n')
+    if last_paragraph > max_length * 0.6:  # Если абзац не слишком короткий
+        return truncated[:last_paragraph].strip()
+    
+    # Ищем последнее предложение
+    sentence_endings = ['. ', '! ', '? ', '.\n', '!\n', '?\n']
+    best_sentence_end = -1
+    for ending in sentence_endings:
+        pos = truncated.rfind(ending)
+        if pos > best_sentence_end:
+            best_sentence_end = pos
+    
+    if best_sentence_end > max_length * 0.7:  # Если предложение не слишком короткое
+        return truncated[:best_sentence_end + 1].strip()
+    
+    # Ищем последнее слово
+    last_space = truncated.rfind(' ')
+    if last_space > max_length * 0.8:  # Если не обрезаем слишком много
+        return truncated[:last_space].strip()
+    
+    # В крайнем случае обрезаем как есть
+    return truncated.strip()
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
@@ -80,6 +117,9 @@ user_product_context = {}  # user_id: [{"name": "Аргент Макс", "url": 
 # Хранилище для режима "Написать консультанту"
 users_waiting_for_natalya = set()  # Пользователи, которые ждут ответа от Наталии
 admin_replying_to = {}  # admin_message_id: user_id - для связи ответов админа с пользователями
+
+# Хранилище для карусели продуктов
+user_product_carousels = {}  # user_id: {"products": [...], "current_index": 0, "message_id": ...}
 
 # Запуск автообновления базы
 if AI_ENABLED:
@@ -162,8 +202,7 @@ async def write_to_natalya(callback_query: types.CallbackQuery):
     users_waiting_for_natalya.add(user_id)
     
     markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Отменить", callback_data="cancel_natalya")],
-        [InlineKeyboardButton(text="◀️ Главное меню", callback_data="back_to_main")]
+        [InlineKeyboardButton(text="❌ Отменить", callback_data="cancel_natalya")]
     ])
     
     # Удаляем сообщение с фото и отправляем новое текстовое
@@ -201,8 +240,7 @@ async def check_city(callback_query: types.CallbackQuery):
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Москва", callback_data="city_moscow"), 
          InlineKeyboardButton(text="СПб", callback_data="city_spb")],
-        [InlineKeyboardButton(text="Другой город", callback_data="city_other")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_main")]
+        [InlineKeyboardButton(text="Другой город", callback_data="city_other")]
     ])
     
     # Удаляем сообщение с фото и отправляем новое текстовое
@@ -294,15 +332,41 @@ async def handle_message(message: types.Message):
         await handle_link_request_confirmation(message)
         return
     
-    # Проверяем, выбирает ли пользователь продукт по номеру или названию
-    # Только если это короткий ответ (номер или название продукта)
-    if user_id in user_product_context and len(text) < 50:
-        # Проверяем, что это действительно выбор продукта, а не новый вопрос
-        if text.isdigit() or any(word.lower() in text.lower() for word in [
-            "аргент", "гепосин", "симбион", "еломил", "bwl", "черного ореха", "солберри", "битерон"
-        ]):
-            await handle_product_selection(message)
-            return
+    # Проверяем запросы на дополнительные рекомендации в контексте темы
+    additional_request_patterns = [
+        "что посоветуешь еще", "что еще", "еще что", "что-то еще", "еще продукты",
+        "что посоветуешь ещё", "что ещё", "ещё что", "что-то ещё", "ещё продукты",
+        "дополнительно что", "дополнительные", "другие варианты"
+    ]
+    if any(pattern in text.lower() for pattern in additional_request_patterns):
+        await handle_additional_recommendations(message)
+        return
+    
+    # Проверяем запрос на ссылку
+    link_indicators = ["ссылка", "ссылки", "ссылочку", "пришли ссылку", "дай ссылку", "покажи ссылку", "где купить", "купить"]
+    if any(indicator in text.lower() for indicator in link_indicators):
+        await handle_product_link_request(message, None)
+        return
+    
+    # Сначала проверяем, является ли это новым вопросом
+    # Очищаем контекст продуктов при новых вопросах
+    if user_id in user_product_context:
+        # Определяем новые вопросы по ключевым словам
+        question_indicators = ["что", "какие", "как", "где", "когда", "почему", "зачем", "расскажи", "покажи", "есть ли", "посоветуй", "нужно", "хочу", "для"]
+        is_new_question = any(indicator in text.lower() for indicator in question_indicators)
+        
+        # Если это длинный текст с вопросительными словами - это новый вопрос
+        if len(text) > 15 and is_new_question:
+            del user_product_context[user_id]
+        # Иначе проверяем, выбирает ли пользователь продукт
+        elif len(text) < 50:
+            # Проверяем, что это действительно выбор продукта
+            if text.isdigit() or any(word.lower() in text.lower() for word in [
+                "аргент", "гепосин", "симбион", "еломил", "bwl", "черного ореха", "солберри", "битерон",
+                "кошачий", "коготь", "ин-аурин", "барс", "bars", "си-энержи", "витамин", "оранж"
+            ]):
+                await handle_product_selection(message)
+                return
     
     # Проверяем, отвечает ли админ на сообщение пользователя
     if user_id == ADMIN_ID and message.reply_to_message:
@@ -313,12 +377,7 @@ async def handle_message(message: types.Message):
     if len(text) < 3:
         return
     
-    # Очищаем контекст продуктов при новых вопросах (если это не короткий ответ)
-    if len(text) > 20 and user_id in user_product_context:
-        # Если это новый вопрос, а не ответ на выбор продукта
-        question_indicators = ["что", "какие", "как", "где", "когда", "почему", "зачем", "расскажи", "покажи", "есть ли"]
-        if any(indicator in text.lower() for indicator in question_indicators):
-            del user_product_context[user_id]
+    # Контекст уже обработан выше
     
     # Обработка приветствий
     greetings = ["привет", "здравствуй", "здравствуйте", "хай", "hello", "hi", "добрый день", "добрый вечер", "доброе утро"]
@@ -384,21 +443,30 @@ async def handle_message(message: types.Message):
                 intent_info += f", Entities: {entities_info}"
             log_user_action(user_id, intent_info)
             
-            # ОТКЛЮЧЕНО: Проверяем, нужно ли использовать пошаговые рекомендации
-            # Теперь всегда используем обычный текстовый ответ через LLM
-            # if processed_message.intent == Intent.PRODUCT_SELECTION:
-            #     # Получаем рекомендации продуктов
-            #     recommendations = recommendation_manager.get_recommendations(
-            #         processed_message.expanded_query, limit=3
-            #     )
-            #     
-            #     if recommendations:
-            #         # Сохраняем рекомендации для пользователя
-            #         user_recommendations[user_id] = recommendations
-            #         
-            #         # Отправляем первую рекомендацию
-            #         await send_recommendation(message, user_id, 1)
-            #         return
+            # Проверяем, нужно ли использовать пошаговые рекомендации
+            # ТОЛЬКО если пользователь отвечает на сообщение бота (Reply)
+            if processed_message.intent == Intent.PRODUCT_SELECTION and message.reply_to_message:
+                # Проверяем, запрашивает ли пользователь весь ассортимент
+                text_lower = text.lower()
+                is_full_assortment_request = any(phrase in text_lower for phrase in [
+                    "весь", "все", "весь ассортимент", "все продукты", "полный список"
+                ])
+                
+                if is_full_assortment_request:
+                    # Получаем все продукты по запросу
+                    all_products = recommendation_manager.get_recommendations(
+                        processed_message.expanded_query, limit=10
+                    )
+                    
+                    if all_products:
+                        # Сохраняем все продукты для пользователя
+                        user_product_context[user_id] = all_products
+                        
+                        # Отправляем список всех продуктов
+                        await send_all_products_list(message, all_products)
+                        return
+                
+                # Для обычных запросов используем LLM
             
             # Обработка запросов о регистрации
             if processed_message.intent == Intent.REGISTRATION:
@@ -408,8 +476,8 @@ async def handle_message(message: types.Message):
                         url="https://aur-ora.com/auth/registration/666282189484/"
                     )],
                     [InlineKeyboardButton(
-                        text="◀️ Главное меню", 
-                        callback_data="back_to_main"
+                        text="✉️ Написать консультанту", 
+                        callback_data="write_to_natalya"
                     )]
                 ])
                 
@@ -425,7 +493,7 @@ async def handle_message(message: types.Message):
                     "• 📦 Отслеживание заказов\n"
                     "• 👤 Личный кабинет\n"
                     "• 🎯 Возможности представителя\n\n"
-                    "Если нужна помощь с регистрацией, обратитесь к Наталье.",
+                    "Если нужна помощь с регистрацией, обратитесь к консультанту.",
                     reply_markup=markup
                 )
                 return
@@ -439,15 +507,22 @@ async def handle_message(message: types.Message):
             # Эффект печатания
             await send_typing_action(user_id, 1.5)
             
-            answer = enhanced_llm.process_query(text)
+            llm_result = enhanced_llm.process_query(text)
             
-            # Извлекаем продукты из ответа для сохранения в контексте
-            extracted_products = extract_products_from_answer(answer)
-            if extracted_products:
-                user_product_context[user_id] = extracted_products
+            # Проверяем, вернул ли LLM кортеж (ответ + контекст) или просто ответ
+            if isinstance(llm_result, tuple) and len(llm_result) == 2:
+                answer, products_context = llm_result
+                # Устанавливаем контекст напрямую (для запросов об иммунитете)
+                user_product_context[user_id] = products_context
             else:
-                # Если продукты не найдены, очищаем контекст
-                user_product_context.pop(user_id, None)
+                answer = llm_result
+                # Извлекаем продукты из ответа для сохранения в контексте
+                extracted_products = extract_products_from_answer(answer)
+                if extracted_products:
+                    user_product_context[user_id] = extracted_products
+                else:
+                    # Если продукты не найдены, очищаем контекст
+                    user_product_context.pop(user_id, None)
             
             # Проверяем, содержит ли ответ информацию об отсутствии данных
             has_no_info_phrases = any(phrase in answer.lower() for phrase in [
@@ -462,11 +537,8 @@ async def handle_message(message: types.Message):
                 # Сохраняем полный ответ для кнопки "Читать дальше"
                 user_full_answers[user_id] = full_answer
                 
-                # Обрезаем ответ для первого сообщения
-                answer = answer[:999]
-                last_space = answer.rfind(' ')
-                if last_space > 800:
-                    answer = answer[:last_space]
+                # Умное обрезание ответа по границам предложений
+                answer = smart_truncate_text(answer, 999)
             
             # Создаем клавиатуру в зависимости от ответа
             markup_buttons = []
@@ -585,9 +657,7 @@ async def handle_message_to_natalya(message: types.Message):
             admin_replying_to[admin_message.message_id] = user_id
             
             # Подтверждаем пользователю
-            markup = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="◀️ Главное меню", callback_data="back_to_main")]
-            ])
+            markup = None
             
             await message.reply(
                 "✅ <b>Сообщение отправлено консультанту!</b>\n\n"
@@ -630,8 +700,7 @@ async def handle_admin_reply(message: types.Message):
         try:
             # Отправляем ответ пользователю
             markup = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✉️ Написать ещё", callback_data="write_to_natalya")],
-                [InlineKeyboardButton(text="◀️ Главное меню", callback_data="back_to_main")]
+                [InlineKeyboardButton(text="✉️ Написать ещё", callback_data="write_to_natalya")]
             ])
             
             await bot.send_message(
@@ -823,11 +892,9 @@ async def handle_read_more(callback_query: types.CallbackQuery):
         if user_id in user_full_answers:
             full_answer = user_full_answers[user_id]
             
-            # Находим где обрезали текст (первые 999 символов)
-            first_part_length = 999
-            last_space = full_answer[:999].rfind(' ')
-            if last_space > 800:
-                first_part_length = last_space
+            # Находим где обрезали текст, используя ту же умную логику
+            first_part = smart_truncate_text(full_answer, 999)
+            first_part_length = len(first_part)
             
             # Получаем оставшуюся часть
             remaining_text = full_answer[first_part_length:].strip()
@@ -849,7 +916,52 @@ async def handle_read_more(callback_query: types.CallbackQuery):
         print(f"Ошибка в handle_read_more: {e}")
         await callback_query.answer("Произошла ошибка", show_alert=True)
 
-async def handle_product_link_request(message: types.Message, processed_message):
+@dp.callback_query(lambda c: c.data.startswith("carousel_prev_"))
+async def handle_carousel_prev(callback_query: types.CallbackQuery):
+    """Обработчик кнопки 'Назад' в карусели"""
+    try:
+        # Извлекаем user_id и index из callback_data
+        parts = callback_query.data.split("_")
+        user_id = int(parts[2])
+        new_index = int(parts[3])
+        
+        # Проверяем что пользователь запрашивает свою карусель
+        if callback_query.from_user.id != user_id:
+            await callback_query.answer("Это не ваша карусель", show_alert=True)
+            return
+        
+        await update_product_carousel(callback_query, user_id, new_index)
+        
+    except Exception as e:
+        print(f"Ошибка в handle_carousel_prev: {e}")
+        await callback_query.answer("Произошла ошибка", show_alert=True)
+
+@dp.callback_query(lambda c: c.data.startswith("carousel_next_"))
+async def handle_carousel_next(callback_query: types.CallbackQuery):
+    """Обработчик кнопки 'Вперед' в карусели"""
+    try:
+        # Извлекаем user_id и index из callback_data
+        parts = callback_query.data.split("_")
+        user_id = int(parts[2])
+        new_index = int(parts[3])
+        
+        # Проверяем что пользователь запрашивает свою карусель
+        if callback_query.from_user.id != user_id:
+            await callback_query.answer("Это не ваша карусель", show_alert=True)
+            return
+        
+        await update_product_carousel(callback_query, user_id, new_index)
+        
+    except Exception as e:
+        print(f"Ошибка в handle_carousel_next: {e}")
+        await callback_query.answer("Произошла ошибка", show_alert=True)
+
+@dp.callback_query(lambda c: c.data == "carousel_info")
+async def handle_carousel_info(callback_query: types.CallbackQuery):
+    """Обработчик кнопки информации о позиции в карусели"""
+    await callback_query.answer("Информация о позиции", show_alert=False)
+
+async def handle_product_link_request(message: types.Message, processed_message=None):
     """Обрабатывает запросы ссылок на конкретные продукты"""
     user_id = message.from_user.id
     
@@ -857,9 +969,19 @@ async def handle_product_link_request(message: types.Message, processed_message)
         # Ищем продукт в базе знаний
         import json
         
+        # Сначала проверяем контекст пользователя - был ли упомянут продукт ранее
+        context_product = None
+        if user_id in user_product_context:
+            context_products = user_product_context[user_id]
+            # Если контекст - список, берем первый продукт
+            if isinstance(context_products, list) and context_products:
+                context_product = context_products[0]
+            elif isinstance(context_products, dict):
+                context_product = context_products
+        
         # Извлекаем название продукта из сущностей или текста
         product_name = ""
-        if processed_message.entities:
+        if processed_message is not None and hasattr(processed_message, 'entities') and processed_message.entities:
             for entity in processed_message.entities:
                 if entity.label == "PRODUCT":
                     product_name = entity.text
@@ -867,10 +989,34 @@ async def handle_product_link_request(message: types.Message, processed_message)
         
         # Если не нашли в сущностях, пытаемся найти в тексте
         if not product_name:
-            text_words = processed_message.text.lower().split()
+            text_words = message.text.lower().split()
+            # Фильтруем служебные слова
+            meaningful_words = [word for word in text_words if len(word) > 2 and word not in 
+                               ["ссылку", "пришли", "дай", "покажи", "нужна", "хочу", "где", "как", "можно", "есть", "на", "вашем", "сайте"]]
+            
+            # Добавляем базовые формы слов для лучшего поиска
+            base_forms = []
+            for word in meaningful_words:
+                base_forms.append(word)
+                # Убираем окончания для поиска базовой формы
+                if word.endswith('у'):
+                    base_forms.append(word[:-1])  # спирулину -> спирулин
+                if word.endswith('ы'):
+                    base_forms.append(word[:-1] + 'а')  # спирулины -> спирулина
+                if word.endswith('ой'):
+                    base_forms.append(word[:-2] + 'а')  # спирулиной -> спирулина
+            
+            meaningful_words = list(set(base_forms))  # Убираем дубликаты
+            
+            print(f"🔍 DEBUG: Исходные слова: {text_words}")
+            print(f"🔍 DEBUG: Значимые слова: {meaningful_words}")
+            
             # Ищем в обеих базах знаний
             found_products = []
+            best_matches = []
             
+            # Универсальный поиск с улучшенной логикой
+            print("🔍 Универсальный поиск продуктов")
             for kb_file in ["knowledge_base.json", "knowledge_base_new.json"]:
                 try:
                     with open(kb_file, "r", encoding="utf-8") as f:
@@ -878,14 +1024,55 @@ async def handle_product_link_request(message: types.Message, processed_message)
                     
                     for item in kb_data:
                         product = item.get("product", "").lower()
-                        # Проверяем вхождение слов из запроса в название продукта
-                        for word in text_words:
-                            if len(word) > 2 and word in product:
-                                found_products.append(item)
-                                break
+                        description = item.get("short_description", "").lower()
+                        category = item.get("category", "").lower()
+                        
+                        # Считаем количество совпадений слов в названии и описании
+                        matches = 0
+                        for word in meaningful_words:
+                            if word in product:
+                                matches += 3  # Высокий вес для названия
+                                print(f"🔍 DEBUG: Слово '{word}' найдено в названии '{product}'")
+                            if word in description:
+                                matches += 1  # Меньший вес для описания
+                                print(f"🔍 DEBUG: Слово '{word}' найдено в описании")
+                            if word in category:
+                                matches += 2  # Средний вес для категории
+                                print(f"🔍 DEBUG: Слово '{word}' найдено в категории '{category}'")
+                        
+                        # Специальная логика для точных совпадений
+                        query_lower = message.text.lower()
+                        
+                        # Для витамина С - приоритет продуктам с витамином С
+                        if "витамин с" in query_lower or "витамин c" in query_lower:
+                            if "витамин с" in product or "витамин c" in product or "оранж" in product:
+                                matches += 10  # Очень высокий приоритет
+                                print(f"🔍 DEBUG: Точное совпадение витамина С в продукте '{product}'")
+                            elif "витамин д" in product or "витамин d" in product:
+                                matches = 0  # Исключаем витамин Д
+                                print(f"🔍 DEBUG: Исключаем витамин Д из результатов")
+                        
+                        # Для витамина Д - приоритет продуктам с витамином Д
+                        elif "витамин д" in query_lower or "витамин d" in query_lower:
+                            if "витамин д" in product or "витамин d" in product:
+                                matches += 10  # Очень высокий приоритет
+                                print(f"🔍 DEBUG: Точное совпадение витамина Д в продукте '{product}'")
+                            else:
+                                matches = 0  # Исключаем все остальные продукты
+                                print(f"🔍 DEBUG: Исключаем продукт '{product}' из результатов витамина Д")
+                        
+                        if matches > 0:
+                            found_products.append((item, matches))
+                            print(f"🔍 DEBUG: Найден продукт '{product}' с {matches} совпадениями")
                                 
                 except Exception as e:
                     print(f"Ошибка чтения {kb_file}: {e}")
+            
+
+            
+            # Сортируем по количеству совпадений
+            found_products.sort(key=lambda x: x[1], reverse=True)
+            found_products = [item[0] for item in found_products]
         else:
             # Ищем по точному названию
             found_products = []
@@ -901,56 +1088,118 @@ async def handle_product_link_request(message: types.Message, processed_message)
                 except Exception as e:
                     print(f"Ошибка чтения {kb_file}: {e}")
         
+        # Специальная обработка для запросов о серебре
+        if not found_products and any(word in message.text.lower() for word in ["серебро", "серебряный", "аргент"]):
+            print("🔍 Специальный поиск для серебра")
+            for kb_file in ["knowledge_base.json", "knowledge_base_new.json"]:
+                try:
+                    with open(kb_file, "r", encoding="utf-8") as f:
+                        kb_data = json.load(f)
+                    
+                    for item in kb_data:
+                        product = item.get("product", "").lower()
+                        description = item.get("short_description", "").lower()
+                        
+                        # Ищем Аргент-Макс или продукты со серебром
+                        if "аргент" in product or "серебро" in description or "argent" in product:
+                            found_products.append(item)
+                            print(f"🔍 DEBUG: Специальный поиск - найдено совпадение в продукте '{product}'")
+                            
+                except Exception as e:
+                    print(f"Ошибка чтения {kb_file}: {e}")
+        
+        # Специальная обработка для запросов о витамине С
+        if not found_products and any(word in message.text.lower() for word in ["витамин с", "витамин c", "витаминс"]):
+            print("🔍 Специальный поиск для витамина С")
+            for kb_file in ["knowledge_base.json", "knowledge_base_new.json"]:
+                try:
+                    with open(kb_file, "r", encoding="utf-8") as f:
+                        kb_data = json.load(f)
+                    
+                    for item in kb_data:
+                        product = item.get("product", "").lower()
+                        category = item.get("category", "").lower()
+                        
+                        # Ищем продукты с витамином С в названии или категории
+                        if "витамин с" in product or "витамин c" in product or "витамин с" in category or "оранж" in product:
+                            found_products.append(item)
+                            print(f"🔍 DEBUG: Специальный поиск - найдено совпадение витамина С в продукте '{product}'")
+                            
+                except Exception as e:
+                    print(f"Ошибка чтения {kb_file}: {e}")
+        
+        # Если не нашли продукты в тексте, но есть контекст - используем его
+        if not found_products and context_product:
+            # Если контекст - список продуктов, используем все
+            if isinstance(context_products, list) and len(context_products) > 1:
+                found_products = context_products
+                print(f"Используем контекстные продукты: {len(context_products)} продуктов")
+            else:
+                found_products = [context_product]
+                print(f"Используем контекстный продукт: {context_product.get('product', '')}")
+        
+
+        
+
+        
         # Эффект печатания
         await send_typing_action(user_id, 2.0)
         
         if found_products:
-            # Берем первый найденный продукт
-            product = found_products[0]
-            product_name = product.get("product", "")
-            url = product.get("url", "")
-            image_id = product.get("image_id", "")
-            short_desc = product.get("short_description", "")
-            
-            # Создаем кнопку с ссылкой
-            markup = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(
-                    text="📖 Подробнее на сайте", 
-                    url=url
-                )]
-            ])
-            
-            caption = f"🌿 **{product_name}**\n\n📝 {short_desc}"
-            
-            # Отправляем с картинкой если есть
-            if image_id and image_id.strip():
-                try:
-                    await message.answer_photo(
-                        photo=image_id,
-                        caption=caption,
-                        reply_markup=markup,
-                        parse_mode="Markdown"
-                    )
-                    return
-                except Exception as e:
-                    print(f"Ошибка отправки фото {image_id}: {e}")
-            
-            # Fallback без картинки
-            await message.reply(
-                caption,
-                reply_markup=markup,
-                parse_mode="Markdown"
-            )
+            # Если найден только один продукт
+            if len(found_products) == 1:
+                product = found_products[0]
+                product_name = product.get("product", "")
+                url = product.get("url", "")
+                image_id = product.get("image_id", "")
+                short_desc = product.get("short_description", "")
+                
+                # Создаем кнопку с ссылкой только если URL не пустой
+                markup_buttons = []
+                if url and url.strip():
+                    markup_buttons.append([InlineKeyboardButton(
+                        text="📖 Подробнее на сайте", 
+                        url=url
+                    )])
+                else:
+                    # Если URL пустой, добавляем кнопку консультанта
+                    markup_buttons.append([InlineKeyboardButton(
+                        text="✉️ Написать консультанту", 
+                        callback_data="write_to_natalya"
+                    )])
+                
+                markup = InlineKeyboardMarkup(inline_keyboard=markup_buttons)
+                
+                caption = f"🌿 **{product_name}**\n\n📝 {short_desc}"
+                
+                # Отправляем с картинкой если есть
+                if image_id and image_id.strip():
+                    try:
+                        await message.answer_photo(
+                            photo=image_id,
+                            caption=caption,
+                            reply_markup=markup,
+                            parse_mode="Markdown"
+                        )
+                        return
+                    except Exception as e:
+                        print(f"Ошибка отправки фото {image_id}: {e}")
+                
+                # Fallback без картинки
+                await message.reply(
+                    caption,
+                    reply_markup=markup,
+                    parse_mode="Markdown"
+                )
+            else:
+                # Если найдено несколько продуктов - создаем карусель
+                await send_product_carousel(message, found_products, user_id)
         else:
             # Продукт не найден
             markup = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(
                     text="✉️ Написать консультанту", 
                     callback_data="write_to_natalya"
-                )],
-                [InlineKeyboardButton(
-                    text="◀️ Главное меню", 
-                    callback_data="back_to_main"
                 )]
             ])
             
@@ -970,8 +1219,206 @@ async def handle_product_link_request(message: types.Message, processed_message)
             "Попробуйте еще раз или обратитесь к консультанту."
         )
 
+async def send_product_carousel(message: types.Message, products: list, user_id: int, start_index: int = 0):
+    """Отправляет карусель продуктов с кнопками навигации"""
+    try:
+        if not products:
+            return
+        
+        current_index = start_index % len(products)
+        product = products[current_index]
+        
+        product_name = product.get("product", "")
+        url = product.get("url", "")
+        image_id = product.get("image_id", "")
+        short_desc = product.get("short_description", "")
+        
+        # Создаем кнопки навигации
+        markup_buttons = []
+        
+        # Кнопка "Подробнее на сайте" только если URL не пустой
+        if url and url.strip():
+            markup_buttons.append([InlineKeyboardButton(
+                text="📖 Подробнее на сайте", 
+                url=url
+            )])
+        else:
+            # Если URL пустой, добавляем кнопку консультанта
+            markup_buttons.append([InlineKeyboardButton(
+                text="✉️ Написать консультанту", 
+                callback_data="write_to_natalya"
+            )])
+        
+        # Кнопки навигации
+        nav_buttons = []
+        
+        # Кнопка "Назад"
+        if len(products) > 1:
+            prev_index = (current_index - 1) % len(products)
+            nav_buttons.append(InlineKeyboardButton(
+                text="⬅️ Назад", 
+                callback_data=f"carousel_prev_{user_id}_{prev_index}"
+            ))
+        
+        # Индикатор позиции
+        nav_buttons.append(InlineKeyboardButton(
+            text=f"{current_index + 1}/{len(products)}", 
+            callback_data="carousel_info"
+        ))
+        
+        # Кнопка "Вперед"
+        if len(products) > 1:
+            next_index = (current_index + 1) % len(products)
+            nav_buttons.append(InlineKeyboardButton(
+                text="Вперед ➡️", 
+                callback_data=f"carousel_next_{user_id}_{next_index}"
+            ))
+        
+        if nav_buttons:
+            markup_buttons.append(nav_buttons)
+        
+        markup = InlineKeyboardMarkup(inline_keyboard=markup_buttons)
+        
+        caption = f"🌿 **{product_name}**\n\n📝 {short_desc}"
+        
+        # Сохраняем информацию о карусели
+        user_product_carousels[user_id] = {
+            "products": products,
+            "current_index": current_index,
+            "message_id": None
+        }
+        
+        # Отправляем с картинкой если есть
+        if image_id and image_id.strip():
+            try:
+                sent_message = await message.answer_photo(
+                    photo=image_id,
+                    caption=caption,
+                    reply_markup=markup,
+                    parse_mode="Markdown"
+                )
+                user_product_carousels[user_id]["message_id"] = sent_message.message_id
+                return
+            except Exception as e:
+                print(f"Ошибка отправки фото {image_id}: {e}")
+        
+        # Fallback без картинки
+        sent_message = await message.reply(
+            caption,
+            reply_markup=markup,
+            parse_mode="Markdown"
+        )
+        user_product_carousels[user_id]["message_id"] = sent_message.message_id
+        
+    except Exception as e:
+        print(f"Ошибка в send_product_carousel: {e}")
+        await message.reply("❌ Произошла ошибка при отправке карусели продуктов.")
+
+async def update_product_carousel(callback_query: types.CallbackQuery, user_id: int, new_index: int):
+    """Обновляет карусель продуктов"""
+    try:
+        if user_id not in user_product_carousels:
+            await callback_query.answer("Карусель не найдена", show_alert=True)
+            return
+        
+        carousel_data = user_product_carousels[user_id]
+        products = carousel_data["products"]
+        
+        if new_index >= len(products):
+            await callback_query.answer("Индекс вне диапазона", show_alert=True)
+            return
+        
+        product = products[new_index]
+        product_name = product.get("product", "")
+        url = product.get("url", "")
+        image_id = product.get("image_id", "")
+        short_desc = product.get("short_description", "")
+        
+        # Создаем кнопки навигации
+        markup_buttons = []
+        
+        # Кнопка "Подробнее на сайте" только если URL не пустой
+        if url and url.strip():
+            markup_buttons.append([InlineKeyboardButton(
+                text="📖 Подробнее на сайте", 
+                url=url
+            )])
+        else:
+            # Если URL пустой, добавляем кнопку консультанта
+            markup_buttons.append([InlineKeyboardButton(
+                text="✉️ Написать консультанту", 
+                callback_data="write_to_natalya"
+            )])
+        
+        # Кнопки навигации
+        nav_buttons = []
+        
+        # Кнопка "Назад"
+        if len(products) > 1:
+            prev_index = (new_index - 1) % len(products)
+            nav_buttons.append(InlineKeyboardButton(
+                text="⬅️ Назад", 
+                callback_data=f"carousel_prev_{user_id}_{prev_index}"
+            ))
+        
+        # Индикатор позиции
+        nav_buttons.append(InlineKeyboardButton(
+            text=f"{new_index + 1}/{len(products)}", 
+            callback_data="carousel_info"
+        ))
+        
+        # Кнопка "Вперед"
+        if len(products) > 1:
+            next_index = (new_index + 1) % len(products)
+            nav_buttons.append(InlineKeyboardButton(
+                text="Вперед ➡️", 
+                callback_data=f"carousel_next_{user_id}_{next_index}"
+            ))
+        
+        if nav_buttons:
+            markup_buttons.append(nav_buttons)
+        
+        markup = InlineKeyboardMarkup(inline_keyboard=markup_buttons)
+        
+        caption = f"🌿 **{product_name}**\n\n📝 {short_desc}"
+        
+        # Обновляем индекс
+        carousel_data["current_index"] = new_index
+        
+        # Обновляем сообщение
+        if image_id and image_id.strip():
+            try:
+                await callback_query.message.edit_media(
+                    types.InputMediaPhoto(
+                        media=image_id,
+                        caption=caption,
+                        parse_mode="Markdown"
+                    ),
+                    reply_markup=markup
+                )
+            except Exception as e:
+                print(f"Ошибка обновления фото {image_id}: {e}")
+                # Fallback - обновляем только текст
+                await callback_query.message.edit_caption(
+                    caption=caption,
+                    reply_markup=markup,
+                    parse_mode="Markdown"
+                )
+        else:
+            await callback_query.message.edit_caption(
+                caption=caption,
+                reply_markup=markup,
+                parse_mode="Markdown"
+            )
+        
+        await callback_query.answer()
+        
+    except Exception as e:
+        print(f"Ошибка в update_product_carousel: {e}")
+        await callback_query.answer("❌ Ошибка обновления карусели", show_alert=True)
+
 def extract_products_from_answer(answer: str) -> list:
-    """Извлекает названия продуктов из ответа бота"""
+    """Извлекает названия продуктов из ответа бота (только рекомендованные)"""
     try:
         import json
         import re
@@ -988,7 +1435,27 @@ def extract_products_from_answer(answer: str) -> list:
             except:
                 continue
         
-        # Ищем упоминания продуктов в ответе
+        # Разбиваем ответ на пронумерованные пункты рекомендаций
+        # Ищем паттерны типа "1. Название продукта", "2. Название", etc.
+        recommendation_pattern = r'(\d+)\.\s*\*?\*?([^-\n]+?)(?:\s*-|\s*\*\*|\n|$)'
+        recommendations = re.findall(recommendation_pattern, answer, re.MULTILINE)
+        
+        recommended_products_text = []
+        for number, product_text in recommendations:
+            # Очищаем от форматирования Markdown
+            clean_text = re.sub(r'\*\*?', '', product_text).strip()
+            recommended_products_text.append(clean_text)
+            print(f"🔍 Найдена рекомендация {number}: '{clean_text}'")
+        
+        # Если не найдены пронумерованные рекомендации, ищем в начале предложений
+        if not recommended_products_text:
+            # Ищем продукты, упомянутые в начале предложений после "рекомендую"
+            sentences = re.split(r'[.!?]\s+', answer)
+            for sentence in sentences:
+                if any(word in sentence.lower() for word in ['рекомендую', 'советую', 'подойдет']):
+                    recommended_products_text.append(sentence)
+        
+        # Ищем соответствие в базе знаний только для рекомендованных продуктов
         for product in all_products:
             product_name = product.get("product", "")
             if not product_name:
@@ -996,34 +1463,48 @@ def extract_products_from_answer(answer: str) -> list:
                 
             # Проверяем различные варианты названия
             name_variants = [
-                product_name,
-                product_name.replace("-", " "),
-                product_name.replace("-", ""),
-                product_name.split()[0] if " " in product_name else product_name
+                product_name,  # Полное название
+                product_name.replace("-", " "),  # Без дефисов
+                product_name.replace("-", "")   # Слитно
             ]
             
-            # Более точный поиск - ищем полные слова
-            answer_lower = answer.lower()
-            for variant in name_variants:
-                variant_lower = variant.lower()
-                # Ищем точное вхождение слова
-                if re.search(r'\b' + re.escape(variant_lower) + r'\b', answer_lower):
-                    products.append({
-                        "name": product_name,
-                        "url": product.get("url", ""),
-                        "image_id": product.get("image_id", ""),
-                        "short_description": product.get("short_description", "")
-                    })
+            # Добавляем сокращения только если они достаточно специфичны
+            first_word = product_name.split()[0] if " " in product_name else product_name
+            if len(first_word) > 3 and first_word.lower() not in ["витамин", "магний", "кальций"]:
+                name_variants.append(first_word)
+            
+            # Ищем только в тексте рекомендаций, а не во всем ответе
+            found_in_recommendations = False
+            for rec_text in recommended_products_text:
+                rec_text_lower = rec_text.lower()
+                for variant in name_variants:
+                    variant_lower = variant.lower()
+                    # Ищем точное вхождение слова в рекомендациях
+                    if re.search(r'\b' + re.escape(variant_lower) + r'\b', rec_text_lower):
+                        found_in_recommendations = True
+                        print(f"✅ Продукт '{product_name}' найден в рекомендации: '{rec_text}'")
+                        break
+                if found_in_recommendations:
                     break
+            
+            if found_in_recommendations:
+                products.append({
+                    "product": product_name,
+                    "url": product.get("url", ""),
+                    "image_id": product.get("image_id", ""),
+                    "short_description": product.get("short_description", "")
+                })
         
         # Убираем дубликаты
         unique_products = []
         seen_names = set()
         for product in products:
-            if product["name"] not in seen_names:
+            product_name = product.get("product", "")
+            if product_name not in seen_names:
                 unique_products.append(product)
-                seen_names.add(product["name"])
+                seen_names.add(product_name)
         
+        print(f"🎯 Извлечено {len(unique_products)} рекомендованных продуктов")
         return unique_products[:5]  # Максимум 5 продуктов
         
     except Exception as e:
@@ -1049,7 +1530,8 @@ async def handle_link_request_confirmation(message: types.Message):
         # Если продуктов несколько - просим уточнить
         products_list = ""
         for i, product in enumerate(products, 1):
-            products_list += f"{i}. {product['name']}\n"
+            product_name = product.get("product", "")
+            products_list += f"{i}. {product_name}\n"
         
         await message.reply(
             f"📋 **На какой продукт нужна ссылка?**\n\n{products_list}\n"
@@ -1078,7 +1560,8 @@ async def handle_product_selection(message: types.Message):
     if not selected_product:
         text_lower = text.lower()
         for product in products:
-            if text_lower in product['name'].lower() or product['name'].lower() in text_lower:
+            product_name = product.get("product", "")
+            if text_lower in product_name.lower() or product_name.lower() in text_lower:
                 selected_product = product
                 break
     
@@ -1091,7 +1574,8 @@ async def handle_product_selection(message: types.Message):
         # Не смогли определить продукт
         products_list = ""
         for i, product in enumerate(products, 1):
-            products_list += f"{i}. {product['name']}\n"
+            product_name = product.get("product", "")
+            products_list += f"{i}. {product_name}\n"
         
         await message.reply(
             f"🤔 Не могу понять, какой продукт вы выбрали.\n\n"
@@ -1099,21 +1583,243 @@ async def handle_product_selection(message: types.Message):
             f"💬 Напишите номер или точное название"
         )
 
+async def send_all_products_list(message: types.Message, products: list):
+    """Отправляет список всех продуктов с кнопками для выбора"""
+    try:
+        products_list = ""
+        for i, product in enumerate(products, 1):
+            product_name = product.get("product", "")
+            products_list += f"{i}. **{product_name}**\n"
+            if product.get('short_description'):
+                products_list += f"   {product['short_description'][:100]}...\n"
+            products_list += "\n"
+        
+        await message.reply(
+            f"🌿 **Все доступные продукты:**\n\n{products_list}\n"
+            f"💬 **Выберите продукт:**\n"
+            f"• Напишите номер (например: 1)\n"
+            f"• Или название продукта (например: Магний Плюс)\n\n"
+            f"📋 *Ответьте на это сообщение, чтобы получить ссылку на выбранный продукт*",
+            parse_mode="Markdown"
+        )
+        
+    except Exception as e:
+        print(f"Ошибка отправки списка продуктов: {e}")
+        await message.reply("❌ Произошла ошибка при отправке списка продуктов")
+
+async def handle_additional_recommendations(message: types.Message):
+    """Обрабатывает запросы на дополнительные рекомендации в контексте темы"""
+    user_id = message.from_user.id
+    
+    try:
+        # Определяем тему предыдущего разговора из контекста продуктов
+        last_topic = None
+        if user_id in user_product_context:
+            context_products = user_product_context[user_id]
+            
+            # Анализируем продукты для определения темы
+            if context_products:
+                # Берем первый продукт для анализа темы
+                first_product = context_products[0]
+                product_name = first_product.get("product", "").lower()
+                
+                # Определяем тему по типам продуктов
+                if any(keyword in product_name for keyword in ["аргент", "кошачий коготь", "ин-аурин", "барс"]):
+                    last_topic = "иммунитет"
+                elif any(keyword in product_name for keyword in ["витамин с", "оранж"]):
+                    last_topic = "витамины"
+                elif any(keyword in product_name for keyword in ["омега", "рыбий жир"]):
+                    last_topic = "жирные кислоты"
+                elif any(keyword in product_name for keyword in ["магний", "кальций"]):
+                    last_topic = "минералы"
+                elif any(keyword in product_name for keyword in ["bwl", "гепосин", "черного ореха"]):
+                    last_topic = "антипаразитарные"
+        
+        print(f"🔍 Определена тема последнего разговора: {last_topic}")
+        
+        # Эффект печатания
+        await send_typing_action(user_id, 2.0)
+        
+        # Если тема определена, ищем дополнительные продукты по той же теме
+        if last_topic == "иммунитет":
+            await handle_additional_immunity_products(message, user_id)
+        elif last_topic in ["витамины", "жирные кислоты", "минералы"]:
+            await handle_additional_supplements(message, user_id, last_topic)
+        else:
+            # Общий ответ если тема не определена или завершена
+            await handle_general_additional_request(message, user_id, last_topic)
+            
+    except Exception as e:
+        print(f"Ошибка обработки дополнительных рекомендаций: {e}")
+        await message.reply(
+            "❌ Произошла ошибка. Попробуйте уточнить запрос или обратитесь к консультанту."
+        )
+
+async def handle_additional_immunity_products(message: types.Message, user_id: int):
+    """Обрабатывает запрос дополнительных продуктов для иммунитета"""
+    from immunity_recommendations import IMMUNITY_SUPPORTING_PRODUCTS, IMMUNITY_INDIRECT_SUPPORT
+    
+    # Получаем уже рекомендованные продукты
+    recommended_products = []
+    if user_id in user_product_context:
+        recommended_products = [p.get("product", "") for p in user_product_context[user_id]]
+    
+    # Ищем дополнительные продукты, которые еще не были рекомендованы
+    additional_products = []
+    
+    # Сначала проверяем поддерживающие продукты (прямое действие)
+    for product_info in IMMUNITY_SUPPORTING_PRODUCTS:
+        if not any(product_info["name"] in rec for rec in recommended_products):
+            additional_products.append(product_info)
+    
+    # Потом косвенного действия
+    for product_info in IMMUNITY_INDIRECT_SUPPORT:
+        if not any(product_info["name"] in rec for rec in recommended_products):
+            additional_products.append(product_info)
+    
+    if additional_products:
+        # Ограничиваем до 3-4 дополнительных продуктов
+        additional_products = additional_products[:4]
+        
+        response = "Дополнительно для поддержки иммунитета можно рассмотреть:\n\n"
+        
+        new_context = []
+        for i, product_info in enumerate(additional_products, 1):
+            response += f"{i}. **{product_info['name']}** - {product_info['description']}\n\n"
+            new_context.append({
+                "product": product_info["name"],
+                "url": "",  # Будет найден при запросе ссылки
+                "image_id": "",
+                "short_description": product_info["description"]
+            })
+        
+        response += "Нужна ссылка на какой-то из продуктов?\n\n*📚 Рекомендация на основе данных с сайта Aurora*"
+        
+        # Обновляем контекст дополнительными продуктами
+        user_product_context[user_id] = new_context
+        
+        await message.reply(response, parse_mode="Markdown")
+    else:
+        # Больше нет подходящих продуктов для иммунитета
+        await message.reply(
+            "🤔 Я уже рекомендовал основные продукты для иммунитета из нашего ассортимента.\n\n"
+            "💡 Можете рассмотреть:\n"
+            "• Комбинирование уже рекомендованных продуктов\n"
+            "• Продукты для других аспектов здоровья\n"
+            "• Обратиться к консультанту для индивидуального подбора\n\n"
+            "Или спросите о продуктах для другой цели! 😊"
+        )
+
+async def handle_additional_supplements(message: types.Message, user_id: int, topic: str):
+    """Обрабатывает запрос дополнительных БАДов по теме"""
+    topic_names = {
+        "витамины": "витаминов",
+        "жирные кислоты": "жирных кислот", 
+        "минералы": "минералов"
+    }
+    
+    await message.reply(
+        f"🤔 Я уже предложил основные варианты {topic_names.get(topic, 'по данной теме')} из нашего ассортимента.\n\n"
+        f"💡 Рекомендую:\n"
+        f"• Выбрать один из уже предложенных продуктов\n"
+        f"• Уточнить конкретную потребность или цель\n"
+        f"• Обратиться к консультанту за индивидуальным подбором\n\n"
+        f"Или расскажите о другой цели - я подберу подходящие продукты! 😊"
+    )
+
+async def handle_general_additional_request(message: types.Message, user_id: int, last_topic: str):
+    """Обрабатывает общий запрос дополнительных рекомендаций"""
+    if last_topic == "антипаразитарные":
+        await message.reply(
+            "⚠️ Кажется, произошла ошибка - вы спрашивали о продуктах для иммунитета, "
+            "а я перешел к антипаразитарным средствам.\n\n"
+            "🔄 Давайте вернемся к вашему первоначальному запросу об иммунитете!\n\n"
+            "Уточните, пожалуйста: какие именно продукты для иммунитета вас интересуют?"
+        )
+    else:
+        await message.reply(
+            "🤔 Чтобы дать точные рекомендации, уточните, пожалуйста:\n\n"
+            "• Какая у вас цель? (иммунитет, печень, кожа, энергия...)\n"
+            "• Есть ли конкретные предпочтения?\n\n"
+            "💬 Например: \"Что для укрепления иммунитета?\" или \"Продукты для печени\"\n\n"
+            "Так я смогу подобрать наиболее подходящие варианты! 😊"
+        )
+
+async def find_product_in_knowledge_base(product_name: str) -> dict:
+    """Ищет полную информацию о продукте во всех базах знаний"""
+    import json
+    import os
+    
+    # Список файлов для поиска
+    kb_files = [
+        "knowledge_base.json",
+        "knowledge_base_new.json", 
+        "knowledge_base_fixed.json"
+    ]
+    
+    for kb_file in kb_files:
+        try:
+            if os.path.exists(kb_file):
+                with open(kb_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    
+                    for item in data:
+                        if 'product' in item:
+                            item_name = item['product']
+                            # Проверяем различные варианты совпадения
+                            if (product_name.lower() in item_name.lower() or 
+                                item_name.lower() in product_name.lower() or
+                                # Проверяем без скобок
+                                product_name.split('(')[0].strip().lower() in item_name.lower() or
+                                item_name.split('(')[0].strip().lower() in product_name.lower()):
+                                print(f"🎯 Найден продукт в {kb_file}: {item_name}")
+                                return item
+        except Exception as e:
+            print(f"⚠️ Ошибка чтения {kb_file}: {e}")
+    
+    print(f"❌ Продукт '{product_name}' не найден в базах данных")
+    return None
+
 async def send_product_link(message: types.Message, product: dict):
     """Отправляет ссылку на продукт с изображением"""
     try:
-        product_name = product.get("name", "")
+        # Поддерживаем оба варианта ключей для совместимости
+        product_name = product.get("name", "") or product.get("product", "")
         url = product.get("url", "")
         image_id = product.get("image_id", "")
         short_desc = product.get("short_description", "")
         
-        # Создаем кнопку с ссылкой
-        markup = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(
+        # Если URL или изображение отсутствуют, пытаемся найти полную информацию в базе данных
+        if not url or not image_id:
+            print(f"🔍 Поиск полной информации для продукта: {product_name}")
+            full_product = await find_product_in_knowledge_base(product_name)
+            if full_product:
+                url = full_product.get("url", url)
+                image_id = full_product.get("image_id", image_id)
+                short_desc = full_product.get("short_description", short_desc)
+                print(f"✅ Найдена полная информация: URL={bool(url)}, Image={bool(image_id)}")
+        
+        # Проверяем, что название продукта не пустое
+        if not product_name:
+            print(f"⚠️ Пустое название продукта: {product}")
+            await message.reply("❌ Не удалось определить название продукта. Попробуйте еще раз.")
+            return
+        
+        # Создаем кнопку с ссылкой только если URL не пустой
+        markup_buttons = []
+        if url and url.strip():
+            markup_buttons.append([InlineKeyboardButton(
                 text="📖 Подробнее на сайте", 
                 url=url
-            )]
-        ])
+            )])
+        else:
+            # Если URL пустой, добавляем кнопку консультанта
+            markup_buttons.append([InlineKeyboardButton(
+                text="✉️ Написать консультанту", 
+                callback_data="write_to_natalya"
+            )])
+        
+        markup = InlineKeyboardMarkup(inline_keyboard=markup_buttons)
         
         caption = f"🌿 **{product_name}**\n\n📝 {short_desc}"
         

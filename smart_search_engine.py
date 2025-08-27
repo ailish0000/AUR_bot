@@ -41,19 +41,14 @@ class SmartSearchEngine:
         
         # Синонимы для улучшения поиска
         self.synonyms = {
-            'печень': ['гепато', 'детокс', 'очищение печени', 'желчегонный'],
-            'иммунитет': ['защитные силы', 'сопротивляемость', 'иммунная система'],
-            'простуда': ['орви', 'грипп', 'кашель', 'насморк', 'вирус'],
-            'суставы': ['артрит', 'артроз', 'хрящи', 'связки', 'подвижность'],
-            'пищеварение': ['жкт', 'желудок', 'кишечник', 'переваривание'],
-            'сорбент': ['детокс', 'очищение', 'токсины', 'шлаки', 'адсорбент'],
-            'антиоксидант': ['свободные радикалы', 'окислительный стресс'],
-            'витамины': ['авитаминоз', 'гиповитаминоз', 'нутриенты'],
-            'витамин с': ['аскорбиновая кислота', 'аскорбин', 'витамин c', 'vitamin c'],
-            'капсулы': ['капс', 'капсула'],
-            'таблетки': ['табс', 'таблетка', 'пилюли'],
-            'жидкий': ['сок', 'концентрат', 'раствор', 'напиток'],
-            'порошок': ['сухая смесь', 'саше']
+            "омега": ["омега-3", "омега 3", "рыбий жир", "omega", "omega-3", "omega 3"],
+            "витамин с": ["витамин c", "аскорбиновая кислота", "аскорбинка", "витамин c", "vitamin c"],
+            "кальций": ["кальций", "calcium", "костная ткань", "кости", "переломы"],
+            "магний": ["магний", "magnesium", "mg", "нервная система", "стресс", "мышцы", "сон"],
+            "пробиотик": ["пробиотик", "пробиотики", "микрофлора", "бифидо", "лакто", "кишечник"],
+            "иммунитет": ["иммунитет", "иммунная система", "защита", "простуда", "грипп"],
+            "детокс": ["детокс", "детоксикация", "очищение", "печень", "токсины"],
+            "антипаразитарный": ["антипаразитарный", "паразиты", "глисты", "гельминты", "очищение от паразитов"]
         }
     
     def load_metadata(self):
@@ -115,36 +110,29 @@ class SmartSearchEngine:
         
         return results
     
-    def _expand_query(self, query: str) -> List[str]:
+    def _expand_query(self, query: str) -> str:
         """Расширяет запрос синонимами"""
-        terms = [query]
+        expanded_terms = [query.lower()]
         
-        # Проверяем точные и частичные совпадения с ключами синонимов
-        for base_word, synonyms in self.synonyms.items():
-            if base_word in query:
-                terms.extend(synonyms)
-                
-        # Добавляем отдельные слова запроса
-        words = query.split()
-        for word in words:
-            if len(word) > 2:  # игнорируем короткие слова
-                terms.append(word)
-                
-        # Специальная обработка для витамина С
-        if any(word in ['витамин', 'витамином', 'с', 'c'] for word in words):
-            if any(word in ['с', 'c'] for word in words):
-                terms.extend(self.synonyms.get('витамин с', []))
-                terms.append('витамин с')  # Добавляем ключевой термин для категориального бонуса
-                
-        # Дополнительная проверка для других ключевых слов
-        for base_word, synonyms in self.synonyms.items():
-            for word in words:
-                # Проверяем корни слов
-                if (word.startswith('витамин') and base_word.startswith('витамин')) or \
-                   (word in base_word or base_word in word):
-                    terms.extend(synonyms)
+        # Добавляем синонимы
+        for main_term, synonyms in self.synonyms.items():
+            if any(syn in query.lower() for syn in [main_term] + synonyms):
+                expanded_terms.extend(synonyms)
         
-        return list(set(terms))  # убираем дубликаты
+        # Специальные случаи
+        if any(word in query.lower() for word in ["витамин", "витамины", "аскорбин"]):
+            expanded_terms.append("витамин с")
+        
+        if any(word in query.lower() for word in ["кальций", "кости", "перелом", "костная"]):
+            expanded_terms.append("кальций")
+        
+        if any(word in query.lower() for word in ["магний", "mg", "нервная", "стресс", "мышцы", "сон"]):
+            expanded_terms.append("магний")
+        
+        if any(word in query.lower() for word in ["омега", "рыбий жир", "omega"]):
+            expanded_terms.append("омега")
+        
+        return " ".join(set(expanded_terms))
     
     def _calculate_text_score(self, product: Dict, search_terms: List[str]) -> float:
         """Вычисляет релевантность продукта для текстового поиска"""
@@ -162,7 +150,7 @@ class SmartSearchEngine:
         
         # Веса для разных полей
         weights = {
-            'product_name': 3.0,
+            'product_name': 50.0,  # Значительно увеличиваем вес названия продукта
             'category': 2.5,
             'indications': 2.5,
             'properties': 2.5,
@@ -173,6 +161,27 @@ class SmartSearchEngine:
             # Точное совпадение в названии (высший приоритет)
             if term in product['product_name'].lower():
                 score += weights['product_name']
+                # Дополнительный бонус за точное совпадение
+                if term == product['product_name'].lower():
+                    score += 50000.0  # Огромный бонус за точное совпадение
+                # Бонус за совпадение ключевого слова в названии
+                elif term in ["магний", "кальций", "витамин", "омега"] and term in product['product_name'].lower():
+                    score += 40000.0  # Очень большой бонус за ключевое слово
+            
+            # Бонус за основной компонент в составе
+            if term in ["магний", "кальций", "витамин", "омега"]:
+                # Проверяем компоненты на наличие основного ингредиента
+                components_text = ' '.join(product['main_components']).lower()
+                if term in components_text:
+                    # Определяем, является ли это основным компонентом
+                    if term == "магний" and any("магний" in comp for comp in product['main_components']):
+                        score += 60000.0  # Очень большой бонус за основной компонент
+                    elif term == "кальций" and any("кальций" in comp for comp in product['main_components']):
+                        score += 60000.0
+                    elif term == "витамин" and any("витамин" in comp for comp in product['main_components']):
+                        score += 60000.0
+                    elif term == "омега" and any("омега" in comp for comp in product['main_components']):
+                        score += 60000.0
             
             # Совпадение в категории
             if term in product['category'].lower():
@@ -182,6 +191,9 @@ class SmartSearchEngine:
             for indication in product['health_indications']:
                 if term in indication.lower():
                     score += weights['indications']
+                    # Дополнительный бонус за ключевые показания
+                    if term in ["магний", "кальций", "витамин", "омега"] and term in indication.lower():
+                        score += 10000.0  # Бонус за показания с ключевыми компонентами
             
             # Совпадение в свойствах
             for prop in product['properties']:
@@ -201,7 +213,9 @@ class SmartSearchEngine:
         # Дополнительный бонус для специфических категорий
         category_bonuses = {
             'витамин с': ['Витамин С'],
+            'кальций': ['Кальций'],
             'витамин д': ['Витамин Д'],
+            'магний': ['Магний'],
             'омега': ['Омега'],
             'печень': ['Гепатопротекторы'],
             'иммунитет': ['Иммуномодуляторы']

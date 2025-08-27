@@ -3678,7 +3678,7 @@
   {
     "source_file": "knowledge_base.json",
     "product_name": "Магний Плюс (Mg Plus)",
-    "category": "Сорбенты и детокс",
+    "category": "Магний",
     "form": "жидкий",
     "target_group": "взрослые",
     "health_indications": [],
@@ -3741,7 +3741,7 @@
   {
     "source_file": "knowledge_base.json",
     "product_name": "Магний Табс (Mg Tabs)",
-    "category": "Сорбенты и детокс",
+    "category": "Магний",
     "form": "таблетки",
     "target_group": "взрослые",
     "health_indications": [],
@@ -3804,7 +3804,7 @@
   {
     "source_file": "knowledge_base.json",
     "product_name": "Магний-Вечер (Mg-Evening)",
-    "category": "Сорбенты и детокс",
+    "category": "Магний",
     "form": "жидкий",
     "target_group": "взрослые",
     "health_indications": [],
@@ -4737,17 +4737,24 @@
   {
     "source_file": "knowledge_base.json",
     "product_name": "Румарин Кальций (Roomarine Calcium)",
-    "category": "Сорбенты и детокс",
+    "category": "Кальций",
     "form": "капсулы",
     "target_group": "взрослые",
-    "health_indications": [],
+    "health_indications": [
+      "укрепление костей",
+      "восстановление после переломов",
+      "поддержка опорно-двигательного аппарата",
+      "источник кальция"
+    ],
     "main_components": [
-      "альгинат кальция 88",
-      "0%; ферментативный гидролизат из трепанга дальневосточного 12",
-      "0%; желатиновая капсула"
+      "альгинат кальция 88,0%",
+      "ферментативный гидролизат из трепанга дальневосточного 12,0%",
+      "желатиновая капсула"
     ],
     "properties": [
-      "сорбент"
+      "сорбент",
+      "источник кальция",
+      "укрепление костей"
     ],
     "contraindications": [
       "индивидуальная непереносимость компонентов продукта",

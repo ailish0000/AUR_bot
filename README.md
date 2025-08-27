@@ -57,7 +57,7 @@
 
 1. Клонируйте репозиторий:
 ```bash
-git clone https://github.com/ailish0000/AUR_bot.git
+git clone <ваш-репозиторий>
 cd AUR_bot
 ```
 
