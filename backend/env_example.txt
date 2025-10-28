@@ -1,0 +1,32 @@
+# Backend API Configuration
+
+# Application
+DEBUG=true
+LOG_LEVEL=INFO
+
+# Database
+DATABASE_URL=sqlite:///./aurora_bot.db
+
+# External APIs
+OPENAI_API_KEY=your_openai_api_key_here
+OPENROUTER_API_KEY=your_openrouter_api_key_here
+QDRANT_URL=your_qdrant_url_here
+QDRANT_API_KEY=your_qdrant_api_key_here
+
+# Google Sheets
+GOOGLE_SHEETS_API_KEY=your_google_sheets_api_key_here
+
+# Caching
+REDIS_URL=redis://localhost:6379
+CACHE_TTL=3600
+
+# Security
+# ВАЖНО: Сгенерируйте случайный ключ! В Python: import secrets; print(secrets.token_urlsafe(32))
+SECRET_KEY=CHANGE_ME_TO_RANDOM_STRING_32_CHARS_OR_MORE
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+
+# Rate Limiting
+RATE_LIMIT_REQUESTS=100
+RATE_LIMIT_WINDOW=60
+
+
